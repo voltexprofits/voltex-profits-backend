@@ -367,5 +367,68 @@ router.post('/test-subscription', auth, async (req, res) => {
     res.status(500).json({ message: 'Error updating subscription' });
   }
 });
+// Start free trial (NEW ENDPOINT - this fixes your 404 error!)
+router.post('/start-trial', auth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Check if user already has an active subscription
+    const now = new Date();
+    if (user.subscription.endDate > now) {
+      return res.status(400).json({ 
+        message: 'You already have an active subscription' 
+      });
+    }
+
+    // Check if user has already used a free trial
+    if (user.subscription.plan === 'free_trial' && user.subscription.trialUsed) {
+      return res.status(400).json({ 
+        message: 'You have already used your free trial' 
+      });
+    }
+
+    // Start 14-day free trial
+    const trialEndDate = new Date();
+    trialEndDate.setDate(trialEndDate.getDate() + 14); // 14 days from now
+
+    const updates = {
+      'subscription.plan': 'free_trial',
+      'subscription.startDate': now,
+      'subscription.endDate': trialEndDate,
+      'subscription.trialUsed': true
+    };
+
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user.id, 
+      updates, 
+      { new: true }
+    ).select('-password -trading.apiSecret');
+
+    res.json({
+      message: 'Free trial activated successfully!',
+      subscription: {
+        plan: updatedUser.subscription.plan,
+        startDate: updatedUser.subscription.startDate,
+        endDate: updatedUser.subscription.endDate,
+        isActive: true,
+        daysLeft: 14
+      },
+      user: {
+        id: updatedUser._id,
+        username: updatedUser.username,
+        email: updatedUser.email,
+        subscription: updatedUser.subscription
+      }
+    });
+
+  } catch (error) {
+    console.error('Free trial activation error:', error);
+    res.status(500).json({ message: 'Server error during trial activation' });
+  }
+});
 
 module.exports = router;

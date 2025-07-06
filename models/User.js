@@ -37,6 +37,10 @@ const UserSchema = new mongoose.Schema({
       type: Date,
       default: () => new Date(Date.now() + 14 * 24 * 60 * 60 * 1000) // 2 weeks
     },
+    trialUsed: {
+      type: Boolean,
+      default: false
+    },
     stripeCustomerId: String,
     subscriptionId: String
   },
