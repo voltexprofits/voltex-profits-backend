@@ -7,11 +7,12 @@ class ExchangeService {
     this.isConnected = false;
     this.tradingActive = false;
     this.activeStrategies = new Map();
-
+    
+    // Your exact Martingale strategies
     this.STRATEGIES = {
       steady_climb: {
         name: "Steady Climb",
-        capitalBase: 0.001,
+        capitalBase: 0.001, // 0.1% of balance (0.1% = 0.001 as decimal)
         leverage: 25,
         martingaleMultipliers: [0.25, 0.27, 0.36, 0.47, 0.63, 0.83, 1.08, 1.43, 1.88, 2.47, 3.25, 4.30, 5.68, 7.51, 9.93],
         maxLevels: 15,
@@ -19,7 +20,7 @@ class ExchangeService {
       },
       power_surge: {
         name: "Power Surge",
-        capitalBase: 0.001,
+        capitalBase: 0.001, // 0.1% of balance (0.1% = 0.001 as decimal)
         leverage: 25,
         martingaleMultipliers: [0.40, 0.54, 0.72, 0.94, 1.26, 1.66, 2.16, 2.86, 3.76, 4.94, 6.50, 8.60, 11.36, 15.02, 19.86],
         maxLevels: 15,
@@ -32,54 +33,51 @@ class ExchangeService {
     try {
       console.log(`🔗 Connecting to ${exchangeName}...`);
 
+      // Initialize exchange based on name
       switch (exchangeName.toLowerCase()) {
         case 'bybit':
           this.exchange = new ccxt.bybit({
-            apiKey,
+            apiKey: apiKey,
             secret: apiSecret,
-            enableRateLimit: true,
+            sandbox: false, // 🔴 LIVE TRADING
             options: {
               defaultType: 'future',
               unified: true
-            },
-            urls: {
-              api: {
-                public: 'https://api-testnet.bybit.com',
-                private: 'https://api-testnet.bybit.com',
-              }
             }
           });
           break;
 
         case 'binance':
           this.exchange = new ccxt.binance({
-            apiKey,
+            apiKey: apiKey,
             secret: apiSecret,
-            enableRateLimit: true,
+            sandbox: false, // 🔴 LIVE TRADING
             options: {
               defaultType: 'future'
             }
           });
           break;
 
-        case 'bitget':
-          this.exchange = new ccxt.bitget({
-            apiKey,
+        case 'okx':
+          console.log('📊 Creating OKX instance for LIVE trading...');
+          this.exchange = new ccxt.okx({
+            apiKey: apiKey,
             secret: apiSecret,
-            password: passphrase || '',
-            enableRateLimit: true,
+            password: passphrase || '', // OKX requires passphrase
+            sandbox: false, // 🔴 LIVE TRADING
             options: {
-              defaultType: 'swap'
+              defaultType: 'swap' // For futures trading
             }
           });
+          console.log('✅ OKX LIVE instance created');
           break;
 
-        case 'okx':
-          this.exchange = new ccxt.okx({
-            apiKey,
+        case 'bitget':
+          this.exchange = new ccxt.bitget({
+            apiKey: apiKey,
             secret: apiSecret,
             password: passphrase || '',
-            enableRateLimit: true,
+            sandbox: false, // 🔴 LIVE TRADING
             options: {
               defaultType: 'swap'
             }
@@ -90,30 +88,41 @@ class ExchangeService {
           throw new Error(`Unsupported exchange: ${exchangeName}`);
       }
 
+      // Test connection by fetching account balance
+      console.log('🧪 Testing connection...');
       const balance = await this.exchange.fetchBalance();
-
-      if (!balance) throw new Error('Failed to fetch account balance');
+      
+      if (!balance) {
+        throw new Error('Failed to fetch account balance');
+      }
 
       this.isConnected = true;
-      console.log(`✅ Connected to ${exchangeName}`);
+      console.log(`✅ Connected to ${exchangeName} successfully`);
       console.log('💰 USDT Balance:', balance.USDT?.total || 0);
 
       return {
         success: true,
         balance: balance.USDT?.total || 0,
-        exchange: exchangeName
+        exchange: exchangeName,
+        connectionTime: new Date().toISOString()
       };
+
     } catch (error) {
       console.error(`❌ Exchange connection error:`, error);
       this.isConnected = false;
-
+      
+      // Provide user-friendly error messages
       let message = error.message;
       if (message.includes('Invalid API') || message.includes('Invalid key')) {
         message = 'Invalid API credentials. Please check your API key and secret.';
       } else if (message.includes('IP') || message.includes('not in whitelist')) {
         message = 'IP address not whitelisted. Please add your server IP to the API whitelist.';
-      } else if (message.includes('permission')) {
-        message = 'Insufficient API permissions. Please enable trading and balance access.';
+      } else if (message.includes('permission') || message.includes('not permitted')) {
+        message = 'Insufficient API permissions. Please enable Contract Trading and Read Position.';
+      } else if (message.includes('403')) {
+        message = 'Access forbidden. Check API permissions and IP whitelist.';
+      } else if (message.includes('451')) {
+        message = 'Service unavailable from this location. Try a different exchange.';
       }
 
       throw new Error(message);
@@ -135,7 +144,7 @@ class ExchangeService {
   }
 
   calculatePositionSize(accountBalance, level, strategy) {
-    const baseAmount = accountBalance * this.STRATEGIES[strategy].capitalBase;
+    const baseAmount = accountBalance * this.STRATEGIES[strategy].capitalBase; // 0.1% of balance
     const multiplier = this.STRATEGIES[strategy].martingaleMultipliers[level - 1];
     return baseAmount * multiplier;
   }
@@ -151,66 +160,85 @@ class ExchangeService {
 
   async placeMartingaleOrder(symbol, strategy, level = 1, side = 'buy') {
     try {
-      if (!this.isConnected) throw new Error('Not connected to exchange');
+      if (!this.isConnected) {
+        throw new Error('Not connected to exchange');
+      }
 
+      // Get current balance
       const accountBalance = await this.getAccountBalance();
+      
+      // Calculate position size using your exact formula
       const positionSize = this.calculatePositionSize(accountBalance, level, strategy);
-
+      
+      // Set leverage first
       await this.setLeverage(symbol, this.STRATEGIES[strategy].leverage);
-
+      
+      // Get minimum order size for the symbol
       const markets = await this.exchange.loadMarkets();
       const market = markets[symbol];
       const minOrderSize = market.limits.amount.min;
-
+      
+      // Ensure position size meets minimum requirements
       if (positionSize < minOrderSize) {
         throw new Error(`Position size ${positionSize} too small. Min: ${minOrderSize}`);
       }
 
-      console.log(`🚀 Placing ${strategy} order:\nSymbol: ${symbol}\nLevel: ${level}\nPosition Size: ${positionSize.toFixed(2)}`);
+      console.log(`🚀 Placing ${strategy} LIVE order:`);
+      console.log(`   Symbol: ${symbol}`);
+      console.log(`   Level: ${level}`);
+      console.log(`   Position Size: ${positionSize.toFixed(2)}`);
+      console.log(`   Account Balance: ${accountBalance.toFixed(2)}`);
+      console.log(`   🔴 LIVE TRADING - REAL MONEY`);
 
+      // Place the market order
       const order = await this.exchange.createMarketOrder(
         symbol,
         side,
         positionSize,
-        null,
-        null,
+        null, // price (null for market order)
+        null, // amount in quote currency
         {
           leverage: this.STRATEGIES[strategy].leverage,
-          marginMode: 'isolated',
-          timeInForce: 'IOC'
+          marginMode: 'isolated', // Use isolated margin
+          timeInForce: 'IOC' // Immediate or Cancel
         }
       );
 
-      console.log('✅ Order placed successfully:', order.id);
-
+      console.log('✅ LIVE Order placed successfully:', order.id);
+      
       return {
         success: true,
         orderId: order.id,
-        symbol,
-        side,
+        symbol: symbol,
+        side: side,
         amount: positionSize,
-        level,
-        strategy,
-        timestamp: new Date()
+        level: level,
+        strategy: strategy,
+        timestamp: new Date(),
+        isLive: true // Flag for live trading
       };
+
     } catch (error) {
-      console.error('❌ Order placement failed:', error);
-      throw new Error(`Order Failed: ${error.message}`);
+      console.error('❌ LIVE Order placement failed:', error);
+      throw new Error(`LIVE Order Failed: ${error.message}`);
     }
   }
 
   async closePosition(symbol) {
     try {
+      // Get current position
       const positions = await this.exchange.fetchPositions([symbol]);
       const position = positions.find(p => p.symbol === symbol && p.size > 0);
-
+      
       if (!position) {
         console.log(`ℹ️ No open position for ${symbol}`);
         return { success: true, message: 'No position to close' };
       }
 
-      const side = position.side === 'long' ? 'sell' : 'buy';
+      console.log(`🔴 Closing LIVE position for ${symbol}...`);
 
+      // Close the position with market order
+      const side = position.side === 'long' ? 'sell' : 'buy';
       const order = await this.exchange.createMarketOrder(
         symbol,
         side,
@@ -220,17 +248,18 @@ class ExchangeService {
         { reduceOnly: true }
       );
 
-      console.log(`✅ Position closed for ${symbol}:`, order.id);
-
+      console.log(`✅ LIVE Position closed for ${symbol}:`, order.id);
+      
       return {
         success: true,
         orderId: order.id,
         closedSize: position.size,
-        pnl: position.unrealizedPnl
+        pnl: position.unrealizedPnl,
+        isLive: true
       };
 
     } catch (error) {
-      console.error('❌ Failed to close position:', error);
+      console.error('❌ Failed to close LIVE position:', error);
       throw error;
     }
   }
@@ -251,61 +280,70 @@ class ExchangeService {
 
   async startMartingaleStrategy(symbol, strategyType) {
     try {
-      console.log(`🎯 Starting ${strategyType} strategy for ${symbol}`);
-
+      console.log(`🎯 Starting ${strategyType} LIVE strategy for ${symbol}`);
+      console.log(`🔴 WARNING: This will trade REAL MONEY`);
+      
+      // Place initial order (Level 1)
       const result = await this.placeMartingaleOrder(symbol, strategyType, 1, 'buy');
-
+      
+      // Store strategy state
       this.activeStrategies.set(symbol, {
         strategy: strategyType,
         currentLevel: 1,
         orderId: result.orderId,
         startTime: new Date(),
-        isActive: true
+        isActive: true,
+        isLive: true
       });
 
       this.tradingActive = true;
       return result;
     } catch (error) {
-      console.error('❌ Failed to start strategy:', error);
+      console.error('❌ Failed to start LIVE strategy:', error);
       throw error;
     }
   }
 
   async stopAllStrategies() {
     try {
-      console.log('🛑 Stopping all trading strategies...');
-
+      console.log('🛑 Stopping all LIVE trading strategies...');
+      
+      // Close all open positions
       const positions = await this.getActivePositions();
       const closePromises = positions.map(pos => this.closePosition(pos.symbol));
-
+      
       await Promise.all(closePromises);
-
+      
+      // Clear active strategies
       this.activeStrategies.clear();
       this.tradingActive = false;
-
-      console.log('✅ All strategies stopped and positions closed');
+      
+      console.log('✅ All LIVE strategies stopped and positions closed');
       return { success: true };
     } catch (error) {
-      console.error('❌ Failed to stop strategies:', error);
+      console.error('❌ Failed to stop LIVE strategies:', error);
       throw error;
     }
   }
 
+  // Risk management - Emergency stop
   async emergencyStop() {
     try {
-      console.log('🚨 EMERGENCY STOP ACTIVATED');
+      console.log('🚨 EMERGENCY STOP ACTIVATED - CLOSING ALL LIVE POSITIONS');
       await this.stopAllStrategies();
-      return { success: true, message: 'Emergency stop completed' };
+      return { success: true, message: 'Emergency stop completed - All live positions closed' };
     } catch (error) {
       console.error('❌ Emergency stop failed:', error);
       throw error;
     }
   }
 
+  // Get strategy status
   getStrategyStatus(symbol) {
     return this.activeStrategies.get(symbol) || null;
   }
 
+  // Check if trading is active
   isTrading() {
     return this.tradingActive && this.activeStrategies.size > 0;
   }
@@ -313,6 +351,12 @@ class ExchangeService {
   getConnectedExchange() {
     return this.exchange ? this.exchange.id : null;
   }
+
+  // Check if connected to live trading
+  isLiveTrading() {
+    return this.isConnected && !this.exchange?.sandbox;
+  }
 }
 
+// Remove duplicate export - keep only one
 module.exports = ExchangeService;

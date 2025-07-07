@@ -8,10 +8,13 @@ const auth = require('../middleware/auth');
 // Global exchange service instance
 const exchangeService = new ExchangeService();
 
-// Connect to exchange - FIXED VERSION
+// Connect to exchange - FIXED VERSION WITH OKX SUPPORT
 router.post('/connect', auth, async (req, res) => {
   try {
     const { exchange, apiKey, secret, passphrase } = req.body;
+    
+    console.log(`🔗 Connect request for ${exchange}`);
+    console.log(`📋 Received data:`, { exchange, hasApiKey: !!apiKey, hasSecret: !!secret, hasPassphrase: !!passphrase });
     
     if (!exchange || !apiKey || !secret) {
       return res.status(400).json({ 
@@ -20,16 +23,24 @@ router.post('/connect', auth, async (req, res) => {
       });
     }
 
-    // Validate exchange
-    const validExchanges = ['bybit', 'binance', 'bitget'];
+    // Validate exchange - UPDATED TO INCLUDE OKX
+    const validExchanges = ['bybit', 'binance', 'bitget', 'okx'];
     if (!validExchanges.includes(exchange)) {
       return res.status(400).json({ 
         success: false,
-        message: 'Invalid exchange. Supported: bybit, binance, bitget' 
+        message: 'Invalid exchange. Supported: bybit, binance, bitget, okx' 
       });
     }
 
-    console.log(`🔗 Connecting to ${exchange}...`);
+    // Validate passphrase requirement for OKX
+    if (exchange === 'okx' && !passphrase) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Passphrase is required for OKX exchange' 
+      });
+    }
+
+    console.log(`🧪 Testing ${exchange} connection...`);
 
     // Test the API connection
     const result = await exchangeService.connect(apiKey, secret, exchange, passphrase);
@@ -43,22 +54,24 @@ router.post('/connect', auth, async (req, res) => {
       'trading.lastConnected': new Date()
     };
 
-    // Add passphrase for Bitget
-    if (exchange === 'bitget' && passphrase) {
+    // Add passphrase for OKX and Bitget
+    if ((exchange === 'okx' || exchange === 'bitget') && passphrase) {
       updateData['trading.passphrase'] = passphrase;
     }
 
     await User.findByIdAndUpdate(req.user.id, updateData);
 
+    console.log(`✅ ${exchange} connected successfully for user ${req.user.id}`);
+
     res.json({
       success: true,
       balance: result.balance,
       exchange: exchange,
-      message: `Connected to ${exchange} successfully`
+      message: `${exchange.toUpperCase()} connected successfully! Balance: $${result.balance?.toFixed(2) || '0.00'}`
     });
 
   } catch (error) {
-    console.error('Exchange connection error:', error);
+    console.error(`❌ Exchange connection error for ${req.body.exchange}:`, error);
     res.status(500).json({ 
       success: false,
       message: error.message 
@@ -95,8 +108,12 @@ router.post('/start', auth, async (req, res) => {
       });
     }
 
-    // Valid pairs
-    const validPairs = ['HYPE/USDT', 'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'ADA/USDT', 'XRP/USDT'];
+    // Valid pairs - EXPANDED FOR MORE EXCHANGES
+    const validPairs = [
+      'HYPE/USDT', 'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 
+      'SOL/USDT', 'ADA/USDT', 'XRP/USDT', 'DOGE/USDT',
+      'AVAX/USDT', 'LINK/USDT', 'DOT/USDT', 'UNI/USDT'
+    ];
     if (!validPairs.includes(pair)) {
       return res.status(400).json({ 
         success: false,
@@ -104,7 +121,8 @@ router.post('/start', auth, async (req, res) => {
       });
     }
 
-    console.log(`🚀 Starting live trading: ${strategy} on ${pair}`);
+    console.log(`🚀 Starting LIVE trading: ${strategy} on ${pair} using ${user.trading.exchange}`);
+    console.log(`🔴 WARNING: This will trade REAL MONEY on ${user.trading.exchange}`);
 
     // Make sure exchange is connected with user's API keys
     await exchangeService.connect(
@@ -132,7 +150,8 @@ router.post('/start', auth, async (req, res) => {
       amount: result.amount,
       level: result.level,
       strategy: result.strategy,
-      message: `${strategy.replace('_', ' ')} strategy started for ${pair}`
+      exchange: user.trading.exchange,
+      message: `🔴 LIVE ${strategy.replace('_', ' ').toUpperCase()} strategy started for ${pair} on ${user.trading.exchange.toUpperCase()}`
     });
 
   } catch (error) {
@@ -147,7 +166,7 @@ router.post('/start', auth, async (req, res) => {
 // Stop trading
 router.post('/stop', auth, async (req, res) => {
   try {
-    console.log('🛑 Stopping live trading...');
+    console.log('🛑 Stopping LIVE trading...');
 
     await exchangeService.stopAllStrategies();
 
@@ -159,7 +178,7 @@ router.post('/stop', auth, async (req, res) => {
 
     res.json({
       success: true,
-      message: 'All trading strategies stopped and positions closed'
+      message: 'All LIVE trading strategies stopped and positions closed'
     });
 
   } catch (error) {
@@ -205,7 +224,8 @@ router.get('/status', auth, async (req, res) => {
       userStrategy: user.trading.strategy,
       userPair: user.trading.tradingPair,
       connected: user.trading.connected,
-      exchange: user.trading.exchange
+      exchange: user.trading.exchange,
+      isLiveTrading: exchangeService.isLiveTrading()
     });
 
   } catch (error) {
@@ -306,7 +326,7 @@ router.post('/emergency-stop', auth, async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Emergency stop completed - all positions closed'
+      message: 'Emergency stop completed - all LIVE positions closed'
     });
 
   } catch (error) {
@@ -331,7 +351,7 @@ router.post('/test-order', auth, async (req, res) => {
       });
     }
     
-    console.log(`🧪 Placing test order for ${pair}`);
+    console.log(`🧪 Placing LIVE test order for ${pair} on ${user.trading.exchange}`);
     
     // Connect with user's API keys
     await exchangeService.connect(
@@ -362,7 +382,8 @@ router.post('/test-order', auth, async (req, res) => {
       success: true,
       orderId: order.id,
       amount: testAmount,
-      message: 'Test order placed successfully'
+      exchange: user.trading.exchange,
+      message: `LIVE test order placed successfully on ${user.trading.exchange.toUpperCase()}`
     });
 
   } catch (error) {

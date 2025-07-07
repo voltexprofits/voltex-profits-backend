@@ -1,4 +1,5 @@
 
+
 const ccxt = require('ccxt');
 const cron = require('node-cron');
 const User = require('../models/User');
