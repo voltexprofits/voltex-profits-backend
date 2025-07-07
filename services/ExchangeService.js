@@ -5,69 +5,126 @@ class ExchangeService {
   constructor() {
     this.exchange = null;
     this.isConnected = false;
+    this.tradingActive = false;
     this.activeStrategies = new Map();
     
     // Your exact Martingale strategies
     this.STRATEGIES = {
       steady_climb: {
         name: "Steady Climb",
-        capitalBase: 0.1, // 0.1% of balance
+        capitalBase: 0.001, // 0.1% of balance (0.1% = 0.001 as decimal)
         leverage: 25,
         martingaleMultipliers: [0.25, 0.27, 0.36, 0.47, 0.63, 0.83, 1.08, 1.43, 1.88, 2.47, 3.25, 4.30, 5.68, 7.51, 9.93],
-        maxLevels: 15
+        maxLevels: 15,
+        type: "conservative"
       },
       power_surge: {
         name: "Power Surge",
-        capitalBase: 0.1, // 0.1% of balance
+        capitalBase: 0.001, // 0.1% of balance (0.1% = 0.001 as decimal)
         leverage: 25,
         martingaleMultipliers: [0.40, 0.54, 0.72, 0.94, 1.26, 1.66, 2.16, 2.86, 3.76, 4.94, 6.50, 8.60, 11.36, 15.02, 19.86],
-        maxLevels: 15
+        maxLevels: 15,
+        type: "aggressive"
       }
     };
   }
 
-  async connect(apiKey, apiSecret) {
+  async connect(apiKey, apiSecret, exchangeName = 'bybit', passphrase = null) {
     try {
-      this.exchange = new ccxt.bybit({
-        apiKey: apiKey,
-        secret: apiSecret,
-        sandbox: false, // LIVE TRADING
-        options: {
-          defaultType: 'future', // Futures trading with leverage
-          unified: true // Use unified trading account
-        }
-      });
+      console.log(`🔗 Connecting to ${exchangeName}...`);
 
-      // Test connection
+      // Initialize exchange based on name
+      switch (exchangeName.toLowerCase()) {
+        case 'bybit':
+          this.exchange = new ccxt.bybit({
+            apiKey: apiKey,
+            secret: apiSecret,
+            sandbox: false, // LIVE TRADING
+            options: {
+              defaultType: 'future', // Futures trading with leverage
+              unified: true // Use unified trading account
+            }
+          });
+          break;
+
+        case 'binance':
+          this.exchange = new ccxt.binance({
+            apiKey: apiKey,
+            secret: apiSecret,
+            sandbox: false,
+            options: {
+              defaultType: 'future'
+            }
+          });
+          break;
+
+        case 'bitget':
+          this.exchange = new ccxt.bitget({
+            apiKey: apiKey,
+            secret: apiSecret,
+            password: passphrase || '',
+            sandbox: false,
+            options: {
+              defaultType: 'swap'
+            }
+          });
+          break;
+
+        default:
+          throw new Error(`Unsupported exchange: ${exchangeName}`);
+      }
+
+      // Test connection by fetching account balance
       const balance = await this.exchange.fetchBalance();
+      
+      if (!balance) {
+        throw new Error('Failed to fetch account balance');
+      }
+
       this.isConnected = true;
-      
-      console.log('✅ Connected to Bybit live account');
+      console.log(`✅ Connected to ${exchangeName} successfully`);
       console.log('💰 USDT Balance:', balance.USDT?.total || 0);
-      
+
       return {
         success: true,
-        balance: balance.USDT?.total || 0
+        balance: balance.USDT?.total || 0,
+        exchange: exchangeName
       };
+
     } catch (error) {
-      console.error('❌ Exchange connection failed:', error);
+      console.error(`❌ Exchange connection error:`, error);
       this.isConnected = false;
-      throw new Error(`API Connection Failed: ${error.message}`);
+      
+      // Provide user-friendly error messages
+      let message = error.message;
+      if (message.includes('Invalid API') || message.includes('Invalid key')) {
+        message = 'Invalid API credentials. Please check your API key and secret.';
+      } else if (message.includes('IP') || message.includes('not in whitelist')) {
+        message = 'IP address not whitelisted. Please add your server IP to the API whitelist.';
+      } else if (message.includes('permission') || message.includes('not permitted')) {
+        message = 'Insufficient API permissions. Please enable Contract Trading and Read Position.';
+      }
+
+      throw new Error(message);
     }
   }
 
   async getAccountBalance() {
+    if (!this.isConnected || !this.exchange) {
+      throw new Error('Exchange not connected');
+    }
+
     try {
       const balance = await this.exchange.fetchBalance();
       return balance.USDT?.total || 0;
     } catch (error) {
       console.error('❌ Failed to get balance:', error);
-      throw error;
+      throw new Error('Failed to fetch account balance');
     }
   }
 
   calculatePositionSize(accountBalance, level, strategy) {
-    const baseAmount = accountBalance * (this.STRATEGIES[strategy].capitalBase / 100);
+    const baseAmount = accountBalance * this.STRATEGIES[strategy].capitalBase; // 0.1% of balance
     const multiplier = this.STRATEGIES[strategy].martingaleMultipliers[level - 1];
     return baseAmount * multiplier;
   }
@@ -103,14 +160,14 @@ class ExchangeService {
       
       // Ensure position size meets minimum requirements
       if (positionSize < minOrderSize) {
-        throw new Error(`Position size $${positionSize} too small. Min: $${minOrderSize}`);
+        throw new Error(`Position size ${positionSize} too small. Min: ${minOrderSize}`);
       }
 
       console.log(`🚀 Placing ${strategy} order:`);
       console.log(`   Symbol: ${symbol}`);
       console.log(`   Level: ${level}`);
-      console.log(`   Position Size: $${positionSize.toFixed(2)}`);
-      console.log(`   Account Balance: $${accountBalance.toFixed(2)}`);
+      console.log(`   Position Size: ${positionSize.toFixed(2)}`);
+      console.log(`   Account Balance: ${accountBalance.toFixed(2)}`);
 
       // Place the market order
       const order = await this.exchange.createMarketOrder(
@@ -183,9 +240,13 @@ class ExchangeService {
   }
 
   async getActivePositions() {
+    if (!this.isConnected || !this.exchange) {
+      throw new Error('Exchange not connected');
+    }
+
     try {
       const positions = await this.exchange.fetchPositions();
-      return positions.filter(p => p.size > 0);
+      return positions.filter(position => position.contracts > 0);
     } catch (error) {
       console.error('❌ Failed to get positions:', error);
       return [];
@@ -208,6 +269,7 @@ class ExchangeService {
         isActive: true
       });
 
+      this.tradingActive = true;
       return result;
     } catch (error) {
       console.error('❌ Failed to start strategy:', error);
@@ -227,6 +289,7 @@ class ExchangeService {
       
       // Clear active strategies
       this.activeStrategies.clear();
+      this.tradingActive = false;
       
       console.log('✅ All strategies stopped and positions closed');
       return { success: true };
@@ -255,8 +318,14 @@ class ExchangeService {
 
   // Check if trading is active
   isTrading() {
-    return this.activeStrategies.size > 0;
+    return this.tradingActive && this.activeStrategies.size > 0;
+  }
+
+  getConnectedExchange() {
+    return this.exchange ? this.exchange.id : null;
   }
 }
+
+module.exports = ExchangeService;
 
 module.exports = ExchangeService;
