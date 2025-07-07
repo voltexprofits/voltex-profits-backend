@@ -45,12 +45,12 @@ const UserSchema = new mongoose.Schema({
     subscriptionId: String
   },
 
-  // Trading configuration
+  // Trading configuration - UPDATED SECTION
   trading: {
     exchange: {
       type: String,
       enum: ['bybit', 'binance', 'bitget'],
-      required: true
+      required: false // Changed to false since users start without API keys
     },
     strategy: {
       type: String,
@@ -71,11 +71,25 @@ const UserSchema = new mongoose.Schema({
     },
     apiKey: {
       type: String,
-      required: true
+      required: false // Changed to false since users start without API keys
     },
     apiSecret: {
       type: String,
-      required: true
+      required: false // Changed to false since users start without API keys
+    },
+    passphrase: {  // NEW: For Bitget exchange
+      type: String,
+      required: false
+    },
+    connected: {   // NEW: Track if API is connected
+      type: Boolean,
+      default: false
+    },
+    lastConnected: { // NEW: When API was last connected
+      type: Date
+    },
+    lastTradeTime: {  // NEW: When last trade was executed
+      type: Date
     },
     testnet: {
       type: Boolean,

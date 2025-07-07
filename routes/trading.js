@@ -8,26 +8,53 @@ const auth = require('../middleware/auth');
 // Global exchange service instance
 const exchangeService = new ExchangeService();
 
-// Connect to exchange
+// Connect to exchange - FIXED VERSION
 router.post('/connect', auth, async (req, res) => {
   try {
-    const user = await User.findById(req.user.id);
+    const { exchange, apiKey, secret, passphrase } = req.body;
     
-    if (!user || !user.trading.apiKey || !user.trading.apiSecret) {
+    if (!exchange || !apiKey || !secret) {
       return res.status(400).json({ 
-        message: 'API keys not configured. Please set them in Settings.' 
+        success: false,
+        message: 'Exchange, API key, and secret are required' 
       });
     }
 
-    const result = await exchangeService.connect(
-      user.trading.apiKey,
-      user.trading.apiSecret
-    );
+    // Validate exchange
+    const validExchanges = ['bybit', 'binance', 'bitget'];
+    if (!validExchanges.includes(exchange)) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Invalid exchange. Supported: bybit, binance, bitget' 
+      });
+    }
+
+    console.log(`🔗 Connecting to ${exchange}...`);
+
+    // Test the API connection
+    const result = await exchangeService.connect(apiKey, secret, exchange, passphrase);
+
+    // If successful, save the API keys to user database
+    const updateData = {
+      'trading.apiKey': apiKey,
+      'trading.apiSecret': secret,
+      'trading.exchange': exchange,
+      'trading.connected': true,
+      'trading.lastConnected': new Date()
+    };
+
+    // Add passphrase for Bitget
+    if (exchange === 'bitget' && passphrase) {
+      updateData['trading.passphrase'] = passphrase;
+    }
+
+    await User.findByIdAndUpdate(req.user.id, updateData);
 
     res.json({
       success: true,
       balance: result.balance,
-      message: 'Connected to exchange successfully'
+      exchange: exchange,
+      message: `Connected to ${exchange} successfully`
     });
 
   } catch (error) {
@@ -39,13 +66,23 @@ router.post('/connect', auth, async (req, res) => {
   }
 });
 
-// Start trading
+// Start trading - UPDATED VERSION
 router.post('/start', auth, async (req, res) => {
   try {
     const { pair, strategy } = req.body;
+    const user = await User.findById(req.user.id);
+    
+    // Check if user has connected exchange
+    if (!user.trading.connected || !user.trading.apiKey) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Please connect your exchange API first in Settings' 
+      });
+    }
     
     if (!pair || !strategy) {
       return res.status(400).json({ 
+        success: false,
         message: 'Trading pair and strategy are required' 
       });
     }
@@ -53,6 +90,7 @@ router.post('/start', auth, async (req, res) => {
     // Valid strategies
     if (!['steady_climb', 'power_surge'].includes(strategy)) {
       return res.status(400).json({ 
+        success: false,
         message: 'Invalid strategy. Use steady_climb or power_surge' 
       });
     }
@@ -61,11 +99,20 @@ router.post('/start', auth, async (req, res) => {
     const validPairs = ['HYPE/USDT', 'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'ADA/USDT', 'XRP/USDT'];
     if (!validPairs.includes(pair)) {
       return res.status(400).json({ 
+        success: false,
         message: 'Invalid trading pair' 
       });
     }
 
     console.log(`🚀 Starting live trading: ${strategy} on ${pair}`);
+
+    // Make sure exchange is connected with user's API keys
+    await exchangeService.connect(
+      user.trading.apiKey, 
+      user.trading.apiSecret, 
+      user.trading.exchange,
+      user.trading.passphrase
+    );
 
     // Start the Martingale strategy
     const result = await exchangeService.startMartingaleStrategy(pair, strategy);
@@ -129,8 +176,25 @@ router.get('/status', auth, async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
     const isTrading = exchangeService.isTrading();
-    const balance = await exchangeService.getAccountBalance();
-    const positions = await exchangeService.getActivePositions();
+    
+    // Only get balance if user is connected
+    let balance = 0;
+    let positions = [];
+    
+    if (user.trading.connected && user.trading.apiKey) {
+      try {
+        await exchangeService.connect(
+          user.trading.apiKey, 
+          user.trading.apiSecret, 
+          user.trading.exchange,
+          user.trading.passphrase
+        );
+        balance = await exchangeService.getAccountBalance();
+        positions = await exchangeService.getActivePositions();
+      } catch (error) {
+        console.log('Could not fetch live data:', error.message);
+      }
+    }
 
     res.json({
       success: true,
@@ -139,7 +203,9 @@ router.get('/status', auth, async (req, res) => {
       activePositions: positions.length,
       positions: positions,
       userStrategy: user.trading.strategy,
-      userPair: user.trading.tradingPair
+      userPair: user.trading.tradingPair,
+      connected: user.trading.connected,
+      exchange: user.trading.exchange
     });
 
   } catch (error) {
@@ -154,12 +220,30 @@ router.get('/status', auth, async (req, res) => {
 // Get account balance
 router.get('/balance', auth, async (req, res) => {
   try {
+    const user = await User.findById(req.user.id);
+    
+    if (!user.trading.connected || !user.trading.apiKey) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Exchange not connected' 
+      });
+    }
+
+    // Connect with user's API keys
+    await exchangeService.connect(
+      user.trading.apiKey, 
+      user.trading.apiSecret, 
+      user.trading.exchange,
+      user.trading.passphrase
+    );
+    
     const balance = await exchangeService.getAccountBalance();
     
     res.json({
       success: true,
       balance: balance,
-      currency: 'USDT'
+      currency: 'USDT',
+      exchange: user.trading.exchange
     });
 
   } catch (error) {
@@ -174,6 +258,23 @@ router.get('/balance', auth, async (req, res) => {
 // Get active positions
 router.get('/positions', auth, async (req, res) => {
   try {
+    const user = await User.findById(req.user.id);
+    
+    if (!user.trading.connected || !user.trading.apiKey) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Exchange not connected' 
+      });
+    }
+
+    // Connect with user's API keys
+    await exchangeService.connect(
+      user.trading.apiKey, 
+      user.trading.apiSecret, 
+      user.trading.exchange,
+      user.trading.passphrase
+    );
+    
     const positions = await exchangeService.getActivePositions();
     
     res.json({
@@ -221,8 +322,24 @@ router.post('/emergency-stop', auth, async (req, res) => {
 router.post('/test-order', auth, async (req, res) => {
   try {
     const { pair } = req.body;
+    const user = await User.findById(req.user.id);
+    
+    if (!user.trading.connected || !user.trading.apiKey) {
+      return res.status(400).json({
+        success: false,
+        message: 'Exchange not connected'
+      });
+    }
     
     console.log(`🧪 Placing test order for ${pair}`);
+    
+    // Connect with user's API keys
+    await exchangeService.connect(
+      user.trading.apiKey, 
+      user.trading.apiSecret, 
+      user.trading.exchange,
+      user.trading.passphrase
+    );
     
     // Place tiny test order (0.01% of balance)
     const balance = await exchangeService.getAccountBalance();
@@ -230,6 +347,7 @@ router.post('/test-order', auth, async (req, res) => {
     
     if (testAmount < 5) {
       return res.status(400).json({
+        success: false,
         message: 'Account balance too low for test order (minimum $5000 recommended)'
       });
     }
